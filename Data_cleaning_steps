@@ -1,0 +1,241 @@
+-- Snapshot of our data
+SELECT TOP 5 *
+FROM [Fifadata].[dbo].[fifa21 raw data v2];
+
+-- View The columns and their datatype
+SELECT c.name AS ColumnName, t.name AS DataType
+FROM sys.columns c
+INNER JOIN sys.types t ON c.system_type_id = t.system_type_id AND t.user_type_id = c.user_type_id
+WHERE c.object_id = OBJECT_ID('[Fifadata].[dbo].[fifa21 raw data v2]')
+ORDER BY c.column_id;
+
+-- View the rows
+SELECT rows AS row_count
+FROM sys.partitions
+WHERE object_id = OBJECT_ID('[Fifadata].[dbo].[fifa21 raw data v2]');
+
+-- Check for Duplicates
+SELECT LongName,
+       Club,
+	   Age,
+	   Nationality,
+       COUNT(*) AS duplicate_count
+FROM [Fifadata].[dbo].[fifa21 raw data v2]
+GROUP BY LongName,
+      Club,
+	  Age,
+	  Nationality
+HAVING COUNT(*) > 1;
+
+-- our query reveals there is one duplicate value, so we need to dig deeper.
+
+SELECT LongName, Nationality, Club, Loan_Date_End, Contract
+FROM [Fifadata].[dbo].[fifa21 raw data v2]
+WHERE LongName = 'Peng Wang'
+AND Age = 27;
+
+-- digging further, we discover it is same player who was sent out on loan for a period of time.
+
+-- Checking for null values
+SELECT COUNT(*) AS null_values_count
+FROM [Fifadata].[dbo].[fifa21 raw data v2]
+WHERE Name IS NULL
+	  OR LongName IS NULL
+	  OR Nationality IS NULL
+	  OR Age IS NULL
+	  OR Club IS NULL
+      OR photoUrl IS NULL
+      OR playerUrl IS NULL;
+
+-- from the query above, we can see that our name, fullname, nationality, age and club columns all contain non-null values.
+
+-- Drop irrelevant columns
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+DROP COLUMN photoUrl;
+
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+DROP COLUMN Loan_Date_End;
+
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+DROP COLUMN Name;
+-- We successfully dropped both the photourl columns because the image files wouldn't open, and the loan_date_end column because 
+--it contained mostly null values.
+
+-- Next, we can rename the LongName column to FullName
+EXEC sp_rename '[fifa21 raw data v2].LongName', 'Full_Name', 'COLUMN';
+
+-- Cleaning the Club column
+-- Display distinct clubs and check for strange characters
+
+SELECT DISTINCT(Club)
+FROM [Fifadata].[dbo].[fifa21 raw data v2]
+ORDER BY Club ASC;
+
+-- trim whitespaces on your data 
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET [Club] = SUBSTRING([Club], CHARINDEX(' ', LTRIM([Club])) + 1, LEN([Club]))
+WHERE CHARINDEX(' ', LTRIM([Club])) > 1;
+
+--- Cleaning the contract column
+-- view the columns
+SELECT DISTINCT(Contract)
+FROM [Fifadata].[dbo].[fifa21 raw data v2];
+
+-- replace the characters strange characters there with a hyphen
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET Contract = REPLACE(Contract, '~', '-');
+
+--- standardize data by replacing rows with full column names with just the year to have a standard format.
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET Contract = SUBSTRING(Contract, 9, 4)
+WHERE Contract LIKE '%on%';
+
+-- create new contract_start and contract_end columns
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+ADD Contract_Start VARCHAR(10);
+
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+ADD Contract_End VARCHAR(10);
+
+-- get contract start year 
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET Contract_Start = SUBSTRING(Contract, 1, 4);
+
+-- get contract end year
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET Contract_End = RIGHT(Contract, 4);
+
+-- view output.
+SELECT Contract, Contract_Start, Contract_End
+FROM [Fifadata].[dbo].[fifa21 raw data v2];
+
+-- Cleaning the weight column.
+SELECT DISTINCT(Weight)
+FROM [Fifadata].[dbo].[fifa21 raw data v2];
+
+-- as seen, some values are in lbs, while some others are in kgs. We need to standardize the values.
+
+-- convert lbs to kg using CASE statement
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET [weight] =
+   CASE 
+      WHEN RIGHT([weight], 2) = 'lbs' THEN CAST(SUBSTRING([weight], 1, LEN([weight])-3) AS FLOAT) / 2.20462
+      ELSE CAST(SUBSTRING([weight], 1, LEN([weight])-2) AS FLOAT)
+   END
+WHERE RIGHT([weight], 2) IN ('kg', 'lbs')
+
+-- Cleaning the height column.
+-- check for distinct values
+SELECT DISTINCT(Height)
+FROM [Fifadata].[dbo].[fifa21 raw data v2];
+
+-- As seen above, some values are in centimetres, while some others are in feets. We have to convert all to centimetres.
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET [Height] =
+    CONVERT(float, SUBSTRING([Height], 1, CHARINDEX('''', [Height]) - 1)) * 30.48 +
+    CONVERT(float, SUBSTRING([Height], CHARINDEX('''', [Height]) + 1, CHARINDEX('"', [Height]) - CHARINDEX('''', [Height]) - 1)) * 2.54
+WHERE [Height] LIKE '[0-9]''[0-9]%"';
+
+
+-- Cleaning the values, wages, and release_clause issue
+
+SELECT value, wage, release_clause
+FROM [Fifadata].[dbo].[fifa21 raw data v2];
+
+-- replace rows having decimals by removing the decimal point in all three columns
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET value = REPLACE(value, '.', ' ');
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET wage = REPLACE(wage, '.', ' ');
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET release_clause = REPLACE(release_clause, '.', ' ');
+
+
+-- replace the M and K with the respective zeros
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET value =
+	(SELECT CASE
+		    WHEN value LIKE '% %' THEN REPLACE(value, 'M', '00000')
+			WHEN value LIKE '%K' THEN REPLACE(value, 'K', '000')
+			WHEN value LIKE '%M' THEN REPLACE(value, 'M', '000000')
+			ELSE value END AS money_value);
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET wage = 
+    (SELECT CASE
+		    WHEN wage LIKE '% %' THEN REPLACE(wage, 'M', '00000')
+			WHEN wage LIKE '%K' THEN REPLACE(wage, 'K', '000')
+			WHEN wage LIKE '%M' THEN REPLACE(wage, 'M', '000000')
+			ELSE wage END AS wage);
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET release_clause =
+   (SELECT CASE
+		    WHEN release_clause LIKE '% %' THEN REPLACE(release_clause, 'M', '00000')
+			WHEN release_clause LIKE '%K' THEN REPLACE(release_clause, 'K', '000')
+			WHEN release_clause LIKE '%M' THEN REPLACE(release_clause, 'M', '000000')
+			ELSE release_clause END AS release_clause);
+
+-- ensure spaces created by decimals removal are properly removed
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET value = REPLACE(value, ' ', '');
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET wage = REPLACE(wage, ' ', '');
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET release_clause = REPLACE(release_clause, ' ', '');
+
+--- remove currency symbols from the three columns and convert to big int datatype
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET value = SUBSTRING(value, 2, LEN(value)-1);
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET wage = SUBSTRING(wage, 2, LEN(value)-1);
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET release_clause = SUBSTRING(release_clause, 2, LEN(value)-1);
+
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+ALTER COLUMN value BIGINT;
+
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+ALTER COLUMN wage BIGINT;
+
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+ALTER COLUMN release_clause BIGINT;
+
+--- Our result
+SELECT value, wage, release_clause
+FROM [Fifadata].[dbo].[fifa21 raw data v2];
+
+---- Clean W_F, and IR columns
+SELECT W_F, SM, A_W, D_W, IR
+FROM [Fifadata].[dbo].[fifa21 raw data v2];
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET W_F = SUBSTRING(W_F, 1, 1);
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET SM = SUBSTRING(SM, 1, 1);
+
+UPDATE [Fifadata].[dbo].[fifa21 raw data v2]
+SET IR = SUBSTRING(IR, 1, 1);
+
+--- convert columns to int
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+ALTER COLUMN W_F INT;
+
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+ALTER COLUMN SM BIGINT;
+
+ALTER TABLE [Fifadata].[dbo].[fifa21 raw data v2]
+ALTER COLUMN IR BIGINT;
+
+-- View columns
+SELECT W_F, SM, A_W, D_W, IR
+FROM [Fifadata].[dbo].[fifa21 raw data v2];
